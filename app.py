@@ -2,18 +2,28 @@ import hashlib
 import hmac
 import json
 import os
-import random
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
-from flask import Flask, abort, make_response, redirect, request
+from flask import Flask, make_response, redirect, request
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
-# Part 1: the gate (unchanged). A tiny human check in front of "Hello, World!".
-# The secret lives in the GATE_SECRET env var on Render, not in this repo.
+# Part 1: the gate. Cloudflare Turnstile in front of "Hello, World!".
+# The widget runs in the visitor's browser and hands the app a token; the app
+# checks the token with Cloudflare using the secret key, and only then issues
+# the HMAC-signed pass cookie. The site key is public (it appears in the
+# page); the secret key lives in the TURNSTILE_SECRET_KEY env var on Render,
+# never in this repo. The pass-cookie secret lives in GATE_SECRET likewise.
 # ---------------------------------------------------------------------------
 SECRET = os.environ.get("GATE_SECRET", "dev-only-toy-secret").encode()
+TURNSTILE_SITE_KEY = os.environ.get(
+    "TURNSTILE_SITE_KEY", "0x4AAAAAAF9hluOYuWIILAEa"
+)
+TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET_KEY", "")
 
 
 def sign(msg: str) -> str:
@@ -21,6 +31,25 @@ def sign(msg: str) -> str:
 
 
 PASS_TOKEN = sign("passed")
+
+
+def turnstile_ok(token: str, remote_ip: str) -> bool:
+    """Ask Cloudflare whether the browser's token is a real pass. Fail
+    closed: no secret configured, no token, a network error, or a 'no' from
+    Cloudflare all mean the visitor stays outside."""
+    if not TURNSTILE_SECRET or not token:
+        return False
+    data = urllib.parse.urlencode(
+        {"secret": TURNSTILE_SECRET, "response": token, "remoteip": remote_ip}
+    ).encode()
+    req = urllib.request.Request(
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify", data=data
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read()).get("success", False) is True
+    except (urllib.error.URLError, ValueError, TimeoutError):
+        return False
 
 # ---------------------------------------------------------------------------
 # Part 2: the honeypot. Deliberately weak-looking bait paths that log every
@@ -113,33 +142,28 @@ def index():
         return json.dumps(users), 200, {"Content-Type": "application/json"}
     if hmac.compare_digest(request.cookies.get("gate_pass", ""), PASS_TOKEN):
         return "Hello, World!"
-    a = random.randint(2, 9)
-    b = random.randint(2, 9)
     html = f"""<!doctype html>
-<html><head><title>A tiny gate</title></head>
+<html><head><title>A tiny gate</title>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
 <body style="font-family: sans-serif; max-width: 32em; margin: 3em auto; padding: 0 1em;">
-<h1>One quick question</h1>
+<h1>One quick check</h1>
 <p>The page behind this gate is just a toy, and the gate is an experiment:
 it keeps the endless robot traffic out and lets people through.</p>
 <form method="post" action="/verify">
-<label>What is {a} + {b}? <input name="answer" inputmode="numeric" required></label>
+<div class="cf-turnstile" data-sitekey="{TURNSTILE_SITE_KEY}"></div>
 <button type="submit">Let me in</button>
 </form>
 </body></html>"""
-    resp = make_response(html)
-    resp.set_cookie("gate_q", f"{a}.{b}.{sign(f'{a}+{b}')}", max_age=600, httponly=True)
-    return resp
+    return make_response(html)
 
 
 @app.route("/verify", methods=["POST"])
 def verify():
-    parts = request.cookies.get("gate_q", "").split(".")
-    if len(parts) != 3:
-        abort(403)
-    a_s, b_s, sig = parts
-    if not hmac.compare_digest(sig, sign(f"{a_s}+{b_s}")):
-        abort(403)
-    if request.form.get("answer", "").strip() != str(int(a_s) + int(b_s)):
+    token = request.form.get("cf-turnstile-response", "")
+    forwarded = request.headers.get("X-Forwarded-For", "") or ""
+    remote_ip = forwarded.split(",")[0].strip() or (request.remote_addr or "")
+    if not turnstile_ok(token, remote_ip):
         return redirect("/")
     resp = make_response(redirect("/"))
     resp.set_cookie("gate_pass", PASS_TOKEN, max_age=3600, httponly=True)

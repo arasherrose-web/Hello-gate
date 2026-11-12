@@ -4,9 +4,14 @@ One toy app for rose.opik.net, running two experiments at once.
 
 ## Experiment 1: the gate
 
-The homepage ("/") sits behind a tiny human check: one arithmetic question
-plus a cookie pass good for an hour. The question is: do the bots stop at
-the question? People answer once and pass; scanners never get the page.
+The homepage ("/") sits behind Cloudflare Turnstile (free tier, widget
+"rose-gate", managed mode): the widget runs quiet checks in the visitor's
+browser and only shows a checkbox when doubtful. The app verifies the
+browser's token with Cloudflare using the secret key, then issues a cookie
+pass good for an hour. The question is: do the bots stop at a real
+challenge? People pass once and stay in; scanners never get the page. (The
+gate began life as one arithmetic question; Turnstile replaced it on
+2026-11-11, the day the repo became deployable.)
 
 ## Experiment 2: the honeypot
 
