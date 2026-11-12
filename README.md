@@ -11,7 +11,10 @@ browser's token with Cloudflare using the secret key, then issues a cookie
 pass good for an hour. The question is: do the bots stop at a real
 challenge? People pass once and stay in; scanners never get the page. (The
 gate began life as one arithmetic question; Turnstile replaced it on
-2026-11-11, the day the repo became deployable.)
+2026-11-11, the day the repo became deployable.) Every gate view and every
+verification attempt is logged as a HONEYPOT line (kinds `gate_view`,
+`gate_verify` with Cloudflare's error codes, `gate_pass`), so the log shows
+who arrived, who failed the check and why, and who got through.
 
 ## Experiment 2: the honeypot
 

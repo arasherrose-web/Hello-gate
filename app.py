@@ -33,12 +33,16 @@ def sign(msg: str) -> str:
 PASS_TOKEN = sign("passed")
 
 
-def turnstile_ok(token: str, remote_ip: str) -> bool:
-    """Ask Cloudflare whether the browser's token is a real pass. Fail
-    closed: no secret configured, no token, a network error, or a 'no' from
-    Cloudflare all mean the visitor stays outside."""
-    if not TURNSTILE_SECRET or not token:
-        return False
+def turnstile_check(token: str, remote_ip: str) -> dict:
+    """Ask Cloudflare whether the browser's token is a real pass. Returns
+    the siteverify verdict plus Cloudflare's error codes, so every attempt
+    can be logged with its reason. Fail closed: no secret configured, no
+    token, a network error, or a 'no' from Cloudflare all mean the visitor
+    stays outside."""
+    if not token:
+        return {"success": False, "error_codes": ["missing-input-response"]}
+    if not TURNSTILE_SECRET:
+        return {"success": False, "error_codes": ["secret-not-configured"]}
     data = urllib.parse.urlencode(
         {"secret": TURNSTILE_SECRET, "response": token, "remoteip": remote_ip}
     ).encode()
@@ -47,9 +51,13 @@ def turnstile_ok(token: str, remote_ip: str) -> bool:
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read()).get("success", False) is True
+            result = json.loads(resp.read())
     except (urllib.error.URLError, ValueError, TimeoutError):
-        return False
+        return {"success": False, "error_codes": ["network-error"]}
+    return {
+        "success": result.get("success", False) is True,
+        "error_codes": result.get("error-codes", []),
+    }
 
 # ---------------------------------------------------------------------------
 # Part 2: the honeypot. Deliberately weak-looking bait paths that log every
@@ -141,7 +149,9 @@ def index():
         ]
         return json.dumps(users), 200, {"Content-Type": "application/json"}
     if hmac.compare_digest(request.cookies.get("gate_pass", ""), PASS_TOKEN):
+        log_hit("gate_pass")
         return "Hello, World!"
+    log_hit("gate_view")
     html = f"""<!doctype html>
 <html><head><title>A tiny gate</title>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
@@ -163,7 +173,16 @@ def verify():
     token = request.form.get("cf-turnstile-response", "")
     forwarded = request.headers.get("X-Forwarded-For", "") or ""
     remote_ip = forwarded.split(",")[0].strip() or (request.remote_addr or "")
-    if not turnstile_ok(token, remote_ip):
+    verdict = turnstile_check(token, remote_ip)
+    log_hit(
+        "gate_verify",
+        {
+            "success": verdict["success"],
+            "token_present": bool(token),
+            "error_codes": verdict["error_codes"],
+        },
+    )
+    if not verdict["success"]:
         return redirect("/")
     resp = make_response(redirect("/"))
     resp.set_cookie("gate_pass", PASS_TOKEN, max_age=3600, httponly=True)
